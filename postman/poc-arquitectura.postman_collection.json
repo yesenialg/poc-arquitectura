@@ -1,0 +1,299 @@
+{
+  "info": {
+    "name": "POC API Gateway Kong - Reservas del teatro",
+    "description": "Pruebas de la POC: Kong como punto de entrada único frente a servicio-cartelera y servicio-reservas. Todas las solicitudes van a {{baseUrl}} (proxy de Kong); los servicios no publican puertos al host.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "baseUrl", "value": "http://localhost:8000" },
+    { "key": "apiKey", "value": "poc-taquilla-demo-key", "description": "Clave de demostración, no usar en producción" },
+    { "key": "reservaId", "value": "" }
+  ],
+  "item": [
+    {
+      "name": "1. Cartelera (pública)",
+      "description": "Ruta cartelera-v1 sin autenticación. Demuestra enrutamiento por path, versionamiento URI (/v1) y trazabilidad con X-Correlation-ID.",
+      "item": [
+        {
+          "name": "Listar funciones",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('El body es un array con al menos una función', () => {",
+                  "  const body = pm.response.json();",
+                  "  pm.expect(body).to.be.an('array');",
+                  "  pm.expect(body.length).to.be.at.least(1);",
+                  "});",
+                  "pm.test('Kong devuelve X-Correlation-ID', () => pm.response.to.have.header('X-Correlation-ID'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/v1/funciones",
+            "description": "Punto de entrada único: el cliente solo conoce Kong, que enruta /v1/funciones al servicio interno de cartelera. El plugin correlation-id agrega X-Correlation-ID y lo devuelve al cliente."
+          }
+        },
+        {
+          "name": "Consultar función F001",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('Devuelve la función F001', () => pm.expect(pm.response.json().id).to.eql('F001'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/v1/funciones/F001",
+            "description": "Operación GET idempotente: el service de Kong tiene retries: 2, así que un fallo de conexión con el upstream se reintenta sin riesgo."
+          }
+        },
+        {
+          "name": "Función inexistente F999",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 404', () => pm.response.to.have.status(404));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/v1/funciones/F999",
+            "description": "Gateway delgado: Kong no interpreta el negocio; el 404 lo genera el servicio y Kong lo devuelve tal cual."
+          }
+        }
+      ]
+    },
+    {
+      "name": "2. Reservas (protegida)",
+      "description": "Ruta reservas-v1 con key-auth (header apikey) y rate-limiting. Demuestra autenticación centralizada en el gateway y validación de contratos en el servicio.",
+      "item": [
+        {
+          "name": "Crear reserva sin API key",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 401', () => pm.response.to.have.status(401));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"funcionId\": \"F001\",\n  \"nombre\": \"Ana Gómez\",\n  \"email\": \"ana.gomez@example.com\",\n  \"sillas\": 2\n}"
+            },
+            "url": "{{baseUrl}}/v1/reservas",
+            "description": "Autenticación centralizada: key-auth rechaza la solicitud en Kong y nunca llega al servicio de reservas."
+          }
+        },
+        {
+          "name": "Crear reserva con API key inválida",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 401', () => pm.response.to.have.status(401));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "apikey", "value": "clave-que-no-existe" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"funcionId\": \"F001\",\n  \"nombre\": \"Ana Gómez\",\n  \"email\": \"ana.gomez@example.com\",\n  \"sillas\": 2\n}"
+            },
+            "url": "{{baseUrl}}/v1/reservas",
+            "description": "La clave no pertenece a ningún consumer registrado en Kong, así que el gateway responde 401."
+          }
+        },
+        {
+          "name": "Crear reserva válida",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 201', () => pm.response.to.have.status(201));",
+                  "const body = pm.response.json();",
+                  "pm.test('Estado CONFIRMADA', () => pm.expect(body.estado).to.eql('CONFIRMADA'));",
+                  "pm.collectionVariables.set('reservaId', body.id);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "apikey", "value": "{{apiKey}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"funcionId\": \"F001\",\n  \"nombre\": \"Ana Gómez\",\n  \"email\": \"ana.gomez@example.com\",\n  \"sillas\": 2\n}"
+            },
+            "url": "{{baseUrl}}/v1/reservas",
+            "description": "Kong identifica al consumer app-taquilla, elimina el header apikey (hide_credentials) y enruta al servicio. El service reservas tiene retries: 0 porque POST no es idempotente."
+          }
+        },
+        {
+          "name": "Consultar reserva creada",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('Devuelve la reserva guardada', () => pm.expect(pm.response.json().id).to.eql(pm.collectionVariables.get('reservaId')));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "apikey", "value": "{{apiKey}}" }],
+            "url": "{{baseUrl}}/v1/reservas/{{reservaId}}",
+            "description": "Consulta la reserva creada en la solicitud anterior. La misma ruta protegida aplica a GET y POST."
+          }
+        },
+        {
+          "name": "Reserva con datos inválidos",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 400', () => pm.response.to.have.status(400));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "apikey", "value": "{{apiKey}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"funcionId\": \"F001\",\n  \"nombre\": \"Ana Gómez\",\n  \"email\": \"correo-mal-formado\",\n  \"sillas\": 0\n}"
+            },
+            "url": "{{baseUrl}}/v1/reservas",
+            "description": "Contrato claro: la validación del DTO vive en el servicio (class-validator), no en el gateway."
+          }
+        }
+      ]
+    },
+    {
+      "name": "3. Rate limiting",
+      "description": "Límite de 5 solicitudes por minuto por consumer en la ruta de reservas.",
+      "item": [
+        {
+          "name": "Crear reserva (ráfaga)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 201 o 429', () => pm.expect(pm.response.code).to.be.oneOf([201, 429]));",
+                  "console.log('Status:', pm.response.code,",
+                  "  '| RateLimit-Remaining:', pm.response.headers.get('RateLimit-Remaining'),",
+                  "  '| X-RateLimit-Remaining-Minute:', pm.response.headers.get('X-RateLimit-Remaining-Minute'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "apikey", "value": "{{apiKey}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"funcionId\": \"F002\",\n  \"nombre\": \"Carlos Ruiz\",\n  \"email\": \"carlos.ruiz@example.com\",\n  \"sillas\": 1\n}"
+            },
+            "url": "{{baseUrl}}/v1/reservas",
+            "description": "Ejecuta esta solicitud con el Collection Runner, 6 iteraciones, después de esperar 60 s sin llamar a reservas. Las 5 primeras responden 201 y la sexta 429 (API rate limit exceeded). Los headers RateLimit-Remaining / X-RateLimit-Remaining-Minute se registran en la consola de Postman."
+          }
+        }
+      ]
+    },
+    {
+      "name": "4. Contratos (OpenAPI)",
+      "description": "Documentación Swagger de cada servicio publicada a través de Kong.",
+      "item": [
+        {
+          "name": "Docs cartelera",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/docs/cartelera/",
+            "description": "Contrato OpenAPI del servicio de cartelera. Kong quita el prefijo /docs/cartelera (strip_path) y lo envía a /docs del servicio."
+          }
+        },
+        {
+          "name": "Docs reservas",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/docs/reservas/",
+            "description": "Contrato OpenAPI del servicio de reservas, con el esquema de CrearReservaDto y sus restricciones."
+          }
+        }
+      ]
+    }
+  ]
+}

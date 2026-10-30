@@ -1,0 +1,65 @@
+_format_version: "3.0"
+
+services:
+  - name: cartelera
+    url: http://servicio-cartelera:3000
+    connect_timeout: 2000
+    read_timeout: 5000
+    write_timeout: 5000
+    # Solo expone GET (idempotente), por eso se permite reintentar
+    retries: 2
+    routes:
+      - name: cartelera-v1
+        paths: [/v1/funciones]
+        strip_path: false
+        methods: [GET]
+
+  - name: reservas
+    url: http://servicio-reservas:3000
+    connect_timeout: 2000
+    read_timeout: 5000
+    write_timeout: 5000
+    # POST no es idempotente: reintentar podría duplicar reservas
+    retries: 0
+    routes:
+      - name: reservas-v1
+        paths: [/v1/reservas]
+        strip_path: false
+        methods: [GET, POST]
+        plugins:
+          - name: key-auth
+            config:
+              key_names: [apikey]
+              hide_credentials: true
+          - name: rate-limiting
+            config:
+              minute: 5
+              policy: local
+              limit_by: consumer
+
+  - name: cartelera-docs
+    url: http://servicio-cartelera:3000/docs
+    routes:
+      - name: docs-cartelera
+        paths: [/docs/cartelera]
+        strip_path: true
+
+  - name: reservas-docs
+    url: http://servicio-reservas:3000/docs
+    routes:
+      - name: docs-reservas
+        paths: [/docs/reservas]
+        strip_path: true
+
+plugins:
+  - name: correlation-id
+    config:
+      header_name: X-Correlation-ID
+      generator: uuid#counter
+      echo_downstream: true
+
+consumers:
+  - username: app-taquilla
+    keyauth_credentials:
+      # clave de demostración, no usar en producción
+      - key: poc-taquilla-demo-key
